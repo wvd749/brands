@@ -1,0 +1,149 @@
+string button.sonaxClickToCallContact(String contactIdStr) 
+{
+    // --- 1. CONFIGURAÇÕES ---
+    TOKEN_SONAX = "SY8KZN1MlqdLhjs6aJx2";
+    
+    // --- 2. VALIDAÇÃO DO CONTATO ---
+    if(contactIdStr == null) 
+    {
+        return "Erro: ID do Contato nulo.";
+    }
+    
+    safeContactIdStr = contactIdStr.toString().replaceAll("[^0-9]","");
+    
+    if(safeContactIdStr == "") 
+    {
+        return "Erro: ID inválido.";
+    }
+    
+    contactIdLong = safeContactIdStr.toLong();
+    
+    // BUSCA NO MÓDULO CONTACTS
+    contact = zoho.crm.getRecordById("Contacts",contactIdLong);
+    
+    if(contact == null || contact.isEmpty()) 
+    {
+        return "Erro: Contato não encontrado.";
+    }
+    
+    // --- 3. EXTRAÇÃO DO TELEFONE ---
+    numero = "";
+    
+    if(contact.get("Mobile") != null) 
+    {
+        numero = contact.get("Mobile");
+    }
+    else if(contact.get("Phone") != null) 
+    {
+        numero = contact.get("Phone");
+    }
+    
+    if(numero == "") 
+    {
+        return "Erro: Contato sem telefone cadastrado.";
+    }
+    
+    // LIMPEZA DO NÚMERO
+    numero = numero.replaceAll("[^0-9]","");
+    
+    // --- 4. IDENTIFICAÇÃO DO RAMAL (OWNER) ---
+    ownerMap = contact.get("Owner");
+    
+    if(ownerMap == null) 
+    {
+        return "Erro: O Contato não possui proprietário.";
+    }
+    
+    ownerId = ownerMap.get("id");
+    ownerName = ownerMap.get("name");
+    
+    // Busca Segura do Usuário
+    userResponse = zoho.crm.getRecordById("users",ownerId);
+    userRecord = Map();
+    
+    if(userResponse != null && !userResponse.isEmpty()) 
+    {
+        if(userResponse.containKey("users"))
+        {
+            userList = userResponse.get("users");
+            if(userList.size() > 0)
+            {
+                userRecord = userList.get(0);
+            }
+        }
+        else
+        {
+            userRecord = userResponse;
+        }
+    }
+    
+    ramal = "";
+    
+    if(userRecord.get("Ramal") != null) 
+    {
+        ramal = userRecord.get("Ramal").toString();
+    }
+    else if(userRecord.get("Extension") != null) 
+    {
+        ramal = userRecord.get("Extension").toString();
+    }
+    else if(userRecord.get("ramal") != null) 
+    {
+        ramal = userRecord.get("ramal").toString();
+    }
+    
+    if(ramal == "") 
+    {
+        return "Erro: O usuário " + ownerName + " não possui Ramal configurado.";
+    }
+    
+    // --- 5. DISPARO SONAX ---
+    call_uid = zoho.currenttime.toString("yyyyMMddHHmmss") + "_" + safeContactIdStr;
+    
+    url = "https://click2call.sonax.net.br/sonax-click2call.php" 
+        + "?numero=" + numero 
+        + "&ramal=" + ramal 
+        + "&token=" + TOKEN_SONAX 
+        + "&var_1=" + safeContactIdStr 
+        + "&var_2=" + call_uid;
+    
+    resp = getUrl(url);
+    
+    // --- 6. REGISTRO DA CHAMADA ---
+    callMap = Map();
+    callMap.put("Subject","Ligação Sonax: " + numero);
+    callMap.put("Call_Type","Efetuada");
+    callMap.put("Outgoing_Call_Status","Completado");
+    
+    startTimeStr = zoho.currenttime.toString("yyyy-MM-dd'T'HH:mm:ss","America/Sao_Paulo") + "-03:00";
+    callMap.put("Call_Start_Time",startTimeStr);
+    callMap.put("Call_Duration","00:00");
+    
+    callMap.put("Who_Id",contactIdLong);
+    callMap.put("$se_module","Contacts");
+    callMap.put("Dialled_Number",numero);
+    callMap.put("Description","Ligação iniciada via Sonax.\nCallUID: " + call_uid + "\nRamal: " + ramal + "\n\n--- RESUMO ---\n(Edite após desligar)");
+    
+    ownerLookup = Map();
+    ownerLookup.put("id",ownerId);
+    callMap.put("Owner",ownerLookup);
+    
+    try 
+    {
+        zoho.crm.createRecord("Calls",callMap);
+        
+        noteMap = Map();
+        noteMap.put("Parent_Id",contactIdLong);
+        noteMap.put("$se_module","Contacts");
+        noteMap.put("Note_Title","Registro de Chamada - " + ownerName);
+        noteMap.put("Note_Content","Ligação para " + numero + " iniciada às " + zoho.currenttime.toString("HH:mm","America/Sao_Paulo") + ".");
+        
+        zoho.crm.createRecord("Notes",noteMap);
+    }
+    catch (e) 
+    {
+        return "Erro ao salvar registros: " + e;
+    }
+    
+    return "✅ Ligação iniciada para " + numero + " (Ramal: " + ramal + ")";
+}
